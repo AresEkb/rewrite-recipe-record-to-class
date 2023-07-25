@@ -1,4 +1,18 @@
+# Build
+bin/
+target/
 build/
-.gradle/
+
+# Eclise
+/.metadata/
+/.sonarlint/
+.classpath
+.project
+.settings/
+
+# IDEA
 .idea/
-out/
+*.iml
+
+# Misc
+.gradle/

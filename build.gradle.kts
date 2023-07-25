@@ -29,9 +29,8 @@ java {
     }
 }
 
-// Set as appropriate for your organization
-group = "com.yourorg"
-description = "Rewrite recipes."
+group = "com.advalange.coderewriter"
+description = "Recipe to replace a record with a class."
 
 repositories {
     mavenLocal()

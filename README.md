@@ -1,19 +1,59 @@
-## Rewrite recipe starter
+## Recipe to replace Java records with classes
 
-This repository serves as a template for building your own recipe JARs and publishing them to a repository where they can be applied on [app.moderne.io](https://app.moderne.io) against all of the public OSS code that is included there.
+This is an [OpenRewrite](https://docs.openrewrite.org/) recipe to transform Java records to classes.
 
-We've provided a sample recipe (NoGuavaListsNewArray) and a sample test class. Both of these exist as placeholders, and they should be replaced by whatever recipe you are interested in writing.
+For instance the following record:
 
-To begin, fork this repository and customize it by:
+```java
+public record Vehicle(String model, int power) {
+}
+```
 
-1. Changing the root project name in `settings.gradle.kts`.
-2. Changing the `group` in `build.gradle.kts`.
-3. Changing the package structure from `com.yourorg` to whatever you want.
+can be transformed to the following class:
 
-## Detailed Guide
+```java
+public final class Vehicle {
+    private final String model;
+    private final int power;
 
-There is a [comprehensive getting started guide](https://docs.openrewrite.org/getting-started/recipe-development-environment)
-available in the OpenRewrite docs that provides more details than the below README.
+    public Vehicle(String model, int power) {
+        this.model = model;
+        this.power = power;
+    }
+
+    public String model() {
+        return model;
+    }
+
+    public int power() {
+        return power;
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        }
+        if (obj == null || getClass() != obj.getClass()) {
+            return false;
+        }
+        Vehicle other = (Vehicle) obj;
+        return Objects.equals(model, other.model) && power == other.power;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(model, power);
+    }
+
+    @Override
+    public String toString() {
+        return "Vehicle[model=" + model + ", power=" + power + "]";
+    }
+}
+```
+
+Other examples of code transformation are available in [tests](src/test/java/com/advalange/coderewriter/ReplaceRecordWithClassTest.java).
 
 ## Local Publishing for Testing
 
@@ -31,16 +71,16 @@ In a Maven project's pom.xml, make your recipe module a plugin dependency:
             <plugin>
                 <groupId>org.openrewrite.maven</groupId>
                 <artifactId>rewrite-maven-plugin</artifactId>
-                <version>5.2.4</version>
+                <version>5.3.2</version>
                 <configuration>
                     <activeRecipes>
-                        <recipe>com.yourorg.NoGuavaListsNewArrayList</recipe>
+                        <recipe>com.advalange.coderewriter.ReplaceRecordWithClass</recipe>
                     </activeRecipes>
                 </configuration>
                 <dependencies>
                     <dependency>
-                        <groupId>com.yourorg</groupId>
-                        <artifactId>rewrite-recipe-starter</artifactId>
+                        <groupId>com.advalange.coderewriter</groupId>
+                        <artifactId>rewrite-recipe-record-to-class</artifactId>
                         <version>0.1.0-SNAPSHOT</version>
                     </dependency>
                 </dependencies>
@@ -56,7 +96,7 @@ The root project of your gradle build, make your recipe module a dependency of t
 ```groovy
 plugins {
     id("java")
-    id("org.openrewrite.rewrite") version("6.1.8")
+    id("org.openrewrite.rewrite") version("6.1.19")
 }
 
 repositories {
@@ -65,11 +105,11 @@ repositories {
 }
 
 dependencies {
-    rewrite("com.yourorg:rewrite-recipe-starter:0.1.0-SNAPSHOT")
+    rewrite("com.advalange.coderewriter:rewrite-recipe-record-to-class:0.1.0-SNAPSHOT")
 }
 
 rewrite {
-    activeRecipe("com.yourorg.NoGuavaListsNewArrayList")
+    activeRecipe("com.advalange.coderewriter.ReplaceRecordWithClass")
 }
 ```
 
