@@ -15,24 +15,32 @@
  */
 package com.advalange.coderewriter;
 
+import lombok.EqualsAndHashCode;
+import lombok.Value;
 import org.openrewrite.*;
 import org.openrewrite.internal.ListUtils;
 import org.openrewrite.java.JavaIsoVisitor;
 import org.openrewrite.java.JavaTemplate;
+import org.openrewrite.java.MethodMatcher;
 import org.openrewrite.java.marker.CompactConstructor;
 import org.openrewrite.java.search.UsesJavaVersion;
 import org.openrewrite.java.tree.*;
+import org.openrewrite.java.tree.JavaType.FullyQualified;
 import org.openrewrite.marker.Markers;
 
 import java.time.Duration;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * The recipe that replaces records with classes.
  */
+@Value
+@EqualsAndHashCode(callSuper = true)
 public class ReplaceRecordWithClass extends Recipe {
 
     @Override
@@ -68,6 +76,9 @@ public class ReplaceRecordWithClass extends Recipe {
 
         private final JavaTemplate getterTemplate = JavaTemplate
                 .builder("public #{} #{}() { return #{}; }").build();
+
+        private final JavaTemplate overriddenGetterTemplate = JavaTemplate
+                .builder("@Override\npublic #{} #{}() { return #{}; }").build();
 
         private final JavaTemplate equalsTemplate = JavaTemplate
                 .builder("@Override\n" +
@@ -133,7 +144,7 @@ public class ReplaceRecordWithClass extends Recipe {
                     .map(stmt -> mapCompactConstructor(stmt, fields))
                     .collect(Collectors.toList())));
 
-            // We should preserve the following member order in the class (as possible):
+            // We should preserve (as possible) the following order of members in the class:
             // 1) static final fields
             // 2) final fields
             // 3) all-args constructor
@@ -146,13 +157,10 @@ public class ReplaceRecordWithClass extends Recipe {
             // The record can already have some kinds of members, so we can't
             // just add all members to the end of the class definition
             // For instance, we use existing constructors as anchor points to insert new members
-            // Maybe it would better to add equals/hashCode/toString after getters,
-            // but it's hard to distinguish getters from other methods in the record
+            // (Maybe it would better to add equals/hashCode/toString after getters,
+            // but it's hard to distinguish getters from other methods in the record)
 
-            // Check if the record has a canonical constructor
-            // If it doesn't then an all-args constructor will be added later
-            boolean hasCanonicalConstructor = false;
-            // Let's find any first constructor
+            // Let's find a first constructor
             // Later the all-args constructor will be added before it if required
             // The private fields will be added before first constructor as well
             J.MethodDeclaration firstConstructor = null;
@@ -162,17 +170,14 @@ public class ReplaceRecordWithClass extends Recipe {
             // Let's find last constructor
             // Later all getters will be added after it
             J.MethodDeclaration lastConstructor = null;
-            for (Statement stmt : result.getBody().getStatements()) {
-                if (stmt instanceof J.MethodDeclaration) {
-                    J.MethodDeclaration method = ((J.MethodDeclaration) stmt);
+            for (Statement statement : result.getBody().getStatements()) {
+                if (statement instanceof J.MethodDeclaration) {
+                    J.MethodDeclaration method = ((J.MethodDeclaration) statement);
                     if (method.isConstructor()) {
                         if (firstConstructor == null) {
                             firstConstructor = method;
                         }
                         lastConstructor = method;
-                        if (!hasCanonicalConstructor && isCanonicalConstructor(method, fields)) {
-                            hasCanonicalConstructor = true;
-                        }
                     } else {
                         if (firstMethod == null) {
                             firstMethod = method;
@@ -182,7 +187,12 @@ public class ReplaceRecordWithClass extends Recipe {
             }
 
             // Add an all-args constructor if there is no a canonical constructor yet
-            if (!hasCanonicalConstructor) {
+            String fieldTypes = fields.stream()
+                    .map(J.VariableDeclarations::getType)
+                    .filter(Objects::nonNull)
+                    .map(ReplaceRecordWithClassVisitor::getTypeName)
+                    .collect(Collectors.joining(", "));
+            if (hasNotMethod(result, "<constructor>(" + fieldTypes + ")")) {
                 // The priorities for inserting a new constructor are as follows:
                 // 1) Before first already existing constructor (non-canonical one)
                 // 2) Before any first method
@@ -190,25 +200,25 @@ public class ReplaceRecordWithClass extends Recipe {
                 JavaCoordinates coordinates = firstConstructor != null
                         ? firstConstructor.getCoordinates().before()
                         : firstMethod != null
-                        ? firstMethod.getCoordinates().before()
-                        : result.getBody().getCoordinates().lastStatement();
-                // TODO Word "Template" added between public and a constructor name
-                result = constructorTemplate.apply(updateCursor(result),
+                                ? firstMethod.getCoordinates().before()
+                                : result.getBody().getCoordinates().lastStatement();
+                // TODO Word "Template" added between public modifier and a constructor name
+                result = result.withBody(constructorTemplate.apply(new Cursor(getCursor(), result.getBody()),
                         coordinates,
                         result.getSimpleName(),
                         fields.stream()
-                                .map(this::createConstructorParameter)
+                                .map(ReplaceRecordWithClassVisitor::createConstructorParameter)
                                 .collect(Collectors.joining(", ")),
                         fields.stream()
-                                .map(this::createFieldAssignment)
-                                .collect(Collectors.joining("\n")));
+                                .map(ReplaceRecordWithClassVisitor::createFieldAssignment)
+                                .collect(Collectors.joining("\n"))));
                 // TODO Is there a simpler way to get a just added constructor?
                 // If the record didn't have any constructors yet, then the added all-args
                 // constructor will be the first and last constructor in the class
                 // It will be used later as an anchor point to insert fields and getters
-                for (Statement stmt : result.getBody().getStatements()) {
-                    if (stmt instanceof J.MethodDeclaration) {
-                        J.MethodDeclaration method = ((J.MethodDeclaration) stmt);
+                for (Statement statement : result.getBody().getStatements()) {
+                    if (statement instanceof J.MethodDeclaration) {
+                        J.MethodDeclaration method = ((J.MethodDeclaration) statement);
                         if (method.isConstructor()) {
                             firstConstructor = method;
                             break;
@@ -219,63 +229,83 @@ public class ReplaceRecordWithClass extends Recipe {
                     lastConstructor = firstConstructor;
                 }
             }
+            assert(firstConstructor != null);
 
             // Add fields before the first constructor
             for (J.VariableDeclarations field : fields) {
-                result = fieldTemplate.apply(updateCursor(result),
+                result = result.withBody(fieldTemplate.apply(new Cursor(getCursor(), result.getBody()),
                         firstConstructor.getCoordinates().before(),
                         Objects.requireNonNull(field.getTypeExpression()).toString(),
-                        field.getVariables().get(0).getSimpleName());
+                        field.getVariables().get(0).getSimpleName()));
             }
 
             // Add getters after the last constructor
             for (int i = fields.size() - 1; i >= 0; i--) {
                 J.VariableDeclarations field = fields.get(i);
                 String fieldName = field.getVariables().get(0).getSimpleName();
-                // TODO Add @Override if required
-                // TODO Check parameter types
-                if (!hasMethod(result, fieldName)) {
-                    result = getterTemplate.apply(updateCursor(result),
+                if (hasNotMethod(result, fieldName + "()")) {
+                    MethodMatcher matcher = new MethodMatcher("*..* " + fieldName + "()", true);
+                    boolean getterIsDefinedInInterface = getSelfAndAllInterfaces(
+                            Objects.requireNonNull(result.getType()))
+                                    .skip(1)
+                                    .map(FullyQualified::getMethods)
+                                    .flatMap(Collection::stream)
+                                    .anyMatch(matcher::matches);
+                    JavaTemplate template = getterIsDefinedInInterface ? overriddenGetterTemplate : getterTemplate;
+                    result = result.withBody(template.apply(new Cursor(getCursor(), result.getBody()),
                             lastConstructor.getCoordinates().after(),
                             Objects.requireNonNull(field.getTypeExpression()).toString(),
                             fieldName,
-                            fieldName);
+                            fieldName));
                 }
             }
 
             // Add equals() method
-            if (!hasMethod(result, "equals", JavaType.buildType("java.lang.Object"))) {
-                result = equalsTemplate.apply(updateCursor(result),
+            if (hasNotMethod(result, "equals(java.lang.Object)")) {
+                result = result.withBody(equalsTemplate.apply(new Cursor(getCursor(), result.getBody()),
                         result.getBody().getCoordinates().lastStatement(),
                         result.getSimpleName(),
                         result.getSimpleName(),
                         fields.stream()
-                                .map(this::createFieldComparison)
-                                .collect(Collectors.joining(" && ")));
+                                .map(ReplaceRecordWithClassVisitor::createFieldComparison)
+                                .collect(Collectors.joining(" && "))));
             }
 
             // Add hashCode() method
-            if (!hasMethod(result, "hashCode")) {
-                result = hashCodeTemplate.apply(updateCursor(result),
+            if (hasNotMethod(result, "hashCode()")) {
+                result = result.withBody(hashCodeTemplate.apply(new Cursor(getCursor(), result.getBody()),
                         result.getBody().getCoordinates().lastStatement(),
                         fields.stream()
                                 .map(field -> field.getVariables().get(0).getSimpleName())
-                                .collect(Collectors.joining(", ")));
+                                .collect(Collectors.joining(", "))));
             }
 
             // Add toString() method
-            if (!hasMethod(result, "toString")) {
-                result = toStringTemplate.apply(updateCursor(result),
+            if (hasNotMethod(result, "toString()")) {
+                result = result.withBody(toStringTemplate.apply(new Cursor(getCursor(), result.getBody()),
                         result.getBody().getCoordinates().lastStatement(),
                         result.getSimpleName(),
                         fields.stream()
-                                .map(this::createFieldPrinting)
-                                .collect(Collectors.joining(", ")));
+                                .map(ReplaceRecordWithClassVisitor::createFieldPrinting)
+                                .collect(Collectors.joining(", "))));
             }
 
             maybeAddImport("java.util.Objects");
 
             return autoFormat(result, ctx);
+        }
+
+        /**
+         * Recursively gets a specified type and all its interfaces.
+         *
+         * @param type the type
+         * @return the stream of interfaces
+         */
+        private static Stream<FullyQualified> getSelfAndAllInterfaces(FullyQualified type) {
+            return Stream.concat(
+                    Stream.of(type),
+                    type.getInterfaces().stream()
+                            .flatMap(ReplaceRecordWithClassVisitor::getSelfAndAllInterfaces));
         }
 
         /**
@@ -305,115 +335,64 @@ public class ReplaceRecordWithClass extends Recipe {
         }
 
         /**
-         * Checks if a constructor is canonical.
+         * Gets the type name.
          *
-         * @param constructor the constructor to check
-         * @param fields the record fields
-         * @return true, if successful
+         * @param javaType the java type
+         * @return the type name
          */
-        private boolean isCanonicalConstructor(J.MethodDeclaration constructor, List<J.VariableDeclarations> fields) {
-            JavaType[] parameterTypes = fields.stream()
-                    .map(J.VariableDeclarations::getType)
-                    .toArray(JavaType[]::new);
-            return hasParameterTypes(constructor, parameterTypes);
+        private static String getTypeName(JavaType javaType) {
+            if (javaType instanceof JavaType.Parameterized) {
+                return ((JavaType.Parameterized) javaType).getType().toString();
+            }
+            return javaType.toString();
         }
 
         /**
-         * Checks if a class or record has a specified method.
+         * Checks if a class or record has not a specified method.
          *
          * @param classDeclaration the class declaration
-         * @param methodName the method name
-         * @param parameterTypes the method parameter types
+         * @param signature the method signature
          * @return true, if successful
          */
-        private boolean hasMethod(J.ClassDeclaration classDeclaration, String methodName, JavaType... parameterTypes) {
-            for (Statement stmt : classDeclaration.getBody().getStatements()) {
-                if (stmt instanceof J.MethodDeclaration) {
-                    J.MethodDeclaration method = (J.MethodDeclaration) stmt;
-                    if (methodName.equals(method.getSimpleName()) && hasParameterTypes(method, parameterTypes)) {
-                        return true;
-                    }
-                }
-            }
-            return false;
+        private static boolean hasNotMethod(J.ClassDeclaration classDeclaration, String signature) {
+            MethodMatcher matcher = new MethodMatcher("*..* " + signature);
+            return classDeclaration.getBody().getStatements().stream()
+                    .filter(J.MethodDeclaration.class::isInstance)
+                    .map(J.MethodDeclaration.class::cast)
+                    .map(J.MethodDeclaration::getMethodType)
+                    .noneMatch(matcher::matches);
         }
 
         /**
-         * Checks if a method has specified parameter types.
-         *
-         * @param method the method to check
-         * @param types the parameter types
-         * @return true, if successful
-         */
-        private boolean hasParameterTypes(J.MethodDeclaration method, JavaType[] types) {
-            JavaType[] parameterTypes = method.getParameters().stream()
-                    .filter(J.VariableDeclarations.class::isInstance)
-                    .map(J.VariableDeclarations.class::cast)
-                    .map(J.VariableDeclarations::getType)
-                    .toArray(JavaType[]::new);
-            if (parameterTypes.length != types.length) {
-                return false;
-            }
-            for (int i = 0; i < parameterTypes.length; i++) {
-                if (!areEqualTypes(parameterTypes[i], types[i])) {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        /**
-         * Checks if two types are equal.
-         *
-         * @param a the first type
-         * @param b the second type
-         * @return true, if successful
-         */
-        private boolean areEqualTypes(JavaType a, JavaType b) {
-            // JavaType.buildType() creates JavaType.ShallowClass
-            // But JavaType.Class can be equal to JavaType.Class only
-            // So we use the custom equality test
-            if (a instanceof JavaType.Class && b instanceof JavaType.Class) {
-                JavaType.Class classA = (JavaType.Class) a;
-                JavaType.Class classB = (JavaType.Class) b;
-                return TypeUtils.fullyQualifiedNamesAreEqual(
-                        classA.getFullyQualifiedName(),
-                        classB.getFullyQualifiedName()) &&
-                        classA.getTypeParameters().equals(classB.getTypeParameters());
-            }
-            return a.equals(b);
-        }
-
-        /**
-         * Creates the constructor parameter.
+         * Creates the constructor parameter expression.
          *
          * @param field the field
          * @return the string
          */
-        private String createConstructorParameter(J.VariableDeclarations field) {
+        private static String createConstructorParameter(J.VariableDeclarations field) {
             String fieldType = Objects.requireNonNull(field.getTypeExpression()).toString();
             String fieldName = field.getVariables().get(0).getSimpleName();
             return String.format("%s %s", fieldType, fieldName);
         }
 
         /**
-         * Creates the field assignment.
+         * Creates the field assignment statement.
          *
          * @param field the field
          * @return the string
          */
-        private String createFieldAssignment(J.VariableDeclarations field) {
+        private static String createFieldAssignment(J.VariableDeclarations field) {
             String fieldName = field.getVariables().get(0).getSimpleName();
             return String.format("this.%s = %s;", fieldName, fieldName);
         }
 
         /**
-         * Creates the field comparison.
+         * Creates the field comparison expression.
          *
          * @param field the field
          * @return the string
          */
-        private String createFieldComparison(J.VariableDeclarations field) {
+        private static String createFieldComparison(J.VariableDeclarations field) {
             String fieldName = field.getVariables().get(0).getSimpleName();
             if (field.getType() instanceof JavaType.Primitive) {
                 return String.format("%s == other.%s", fieldName, fieldName);
@@ -423,18 +402,17 @@ public class ReplaceRecordWithClass extends Recipe {
         }
 
         /**
-         * Creates the field printing.
+         * Creates the field printing expression.
          *
          * @param field the field
          * @return the string
          */
-        private String createFieldPrinting(J.VariableDeclarations field) {
+        private static String createFieldPrinting(J.VariableDeclarations field) {
             String fieldName = field.getVariables().get(0).getSimpleName();
-            // TODO The following format should be used (without parentheses)
-            // But in that case some of the tests are failed with
+            // TODO If fields are added without parentheses, some of the tests are failed with following exception:
             // java.lang.IllegalStateException: AST contains missing or invalid type information
-            // return String.format("%s=\" + %s + \"", fieldName, fieldName);
-            return String.format("%s=\" + (%s) + \"", fieldName, fieldName);
+            return String.format("%s=\" + %s + \"", fieldName, fieldName);
+            // return String.format("%s=\" + (%s) + \"", fieldName, fieldName);
         }
 
     }

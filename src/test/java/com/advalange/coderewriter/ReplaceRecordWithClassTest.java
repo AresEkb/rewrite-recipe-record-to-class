@@ -15,7 +15,6 @@
  */
 package com.advalange.coderewriter;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.openrewrite.test.RecipeSpec;
 import org.openrewrite.test.RewriteTest;
@@ -609,6 +608,8 @@ class ReplaceRecordWithClassTest implements RewriteTest {
               """
               package com.example;
 
+              import java.util.Objects;
+
               public record Vehicle(String model) {
                   @Override
                   public boolean equals(Object obj) {
@@ -634,6 +635,8 @@ class ReplaceRecordWithClassTest implements RewriteTest {
               """,
               """
               package com.example;
+
+              import java.util.Objects;
 
               public final class Vehicle {
                   private final String model;
@@ -672,7 +675,6 @@ class ReplaceRecordWithClassTest implements RewriteTest {
     }
 
     @Test
-    @Disabled("Not fully supported yet")
     void implementsInterface() {
         rewriteRun(
           version(
@@ -685,7 +687,10 @@ class ReplaceRecordWithClassTest implements RewriteTest {
                   String model();
               }
 
-              public record Vehicle(String model) implements Product {
+              interface TechnicalProduct extends Product {
+              }
+
+              record Vehicle(String model) implements TechnicalProduct {
               }
               """,
               """
@@ -697,7 +702,10 @@ class ReplaceRecordWithClassTest implements RewriteTest {
                   String model();
               }
 
-              public final class Vehicle implements Product {
+              interface TechnicalProduct extends Product {
+              }
+
+              final class Vehicle implements TechnicalProduct {
                   private final String model;
 
                   public Vehicle(String model) {
@@ -806,6 +814,8 @@ class ReplaceRecordWithClassTest implements RewriteTest {
             java(
               """
               package com.example;
+
+              import java.util.Objects;
 
               /**
                * The vehicle class.
