@@ -135,7 +135,7 @@ public class ReplaceRecordWithClass extends Recipe {
 
             // Add final modifier to the class
             result = result.withModifiers(ListUtils.concat(result.getModifiers(), new J.Modifier(
-                    Tree.randomId(), Space.EMPTY, Markers.EMPTY, null, J.Modifier.Type.Final,
+                    Tree.randomId(), Space.EMPTY, Markers.EMPTY, J.Modifier.Type.Final,
                     Collections.emptyList())));
 
             // Replace a compact constructor by an all-args constructor if any
@@ -229,7 +229,7 @@ public class ReplaceRecordWithClass extends Recipe {
                     lastConstructor = firstConstructor;
                 }
             }
-            assert(firstConstructor != null);
+            assert (firstConstructor != null);
 
             // Add fields before the first constructor
             for (J.VariableDeclarations field : fields) {
